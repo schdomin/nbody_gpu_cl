@@ -20,9 +20,6 @@ struct CParticle
     //ds fix the particle index at construction
     CParticle( const unsigned int& p_uIndexParticle ): m_uIndexParticle( p_uIndexParticle ){ };
 
-    //ds default constructor for cuda vectors..
-    CParticle( ): m_uIndexParticle( 0 ){ };
-
     //ds constant properties
     double m_dMass;
 
@@ -30,6 +27,7 @@ struct CParticle
     double m_cPosition[3];
     double m_cVelocity[3];
     double m_cAcceleration[3];
+    double m_cNewAcceleration[3];
 
     //ds indexi
     unsigned int m_uIndexParticle; //<- should be const, but because we're using vectors it has to remain changeable (copy ctor of vector, etc)
@@ -56,11 +54,11 @@ public:
 //ds attributes
 private:
 
-    //ds particle storage (contains cell id and particle id)
-    thrust::host_vector< NBody::CParticle > m_vecParticles;
+    //ds internal particle storage (reference to host vector in main)
+    std::vector< NBody::CParticle > m_vecParticles;
 
     //ds support structure (does not grow dynamically, is of size N) and returns the start and end index of the current cell
-    std::pair< unsigned int, unsigned int > *m_arrCellIndexRange;
+    unsigned int *m_arrCellIndexRange;
 
     //ds domain properties
     const std::pair< double, double > m_pairBoundaries;
@@ -79,23 +77,15 @@ private:
 //ds accessors
 public:
 
-    void createParticlesUniformFromNormalDistribution( const double& p_dTargetKineticEnergy, const double& p_dParticleMass = 1.0 );
-    void updateParticlesVelocityVerlet( const double& p_dTimeStep, const double& p_dMinimumDistance, const double& p_dPotentialDepth );
+    thrust::host_vector< NBody::CParticle > createParticlesUniformFromNormalDistribution( const double& p_dTargetKineticEnergy, const double& p_dParticleMass = 1.0 );
     void saveParticlesToStream( );
-    void saveIntegralsToStream( const double& p_dMinimumDistance, const double& p_dPotentialDepth );
+    void saveIntegralsToStream( const double& p_dTotalEnergy );
     void writeParticlesToFile( const std::string& p_strFilename, const unsigned int& p_uNumberOfTimeSteps );
     void writeIntegralsToFile( const std::string& p_strFilename, const unsigned int& p_uNumberOfTimeSteps, const double& p_dTimeStepSize );
 
     //ds getter/setter to communicate with CUDA kernels
-    thrust::device_vector< NBody::CParticle > getParticles( ) const;
-    void setParticles( thrust::device_vector< NBody::CParticle >& p_vecParticles );
-    std::pair< unsigned int, unsigned int >* getCellIndexRange( ) const;
+    unsigned int* getCellIndexRange( );
     unsigned int getMaximumNeighborCellIndexRange( ) const;
-
-//ds accessors/helpers
-public:
-
-    double getTotalEnergy( const double& p_dMinimumDistance, const double& p_dPotentialDepth ) const;
 
 //ds helpers
 private:
@@ -108,10 +98,12 @@ private:
     double _getUniformlyDistributedNumber( ) const;
     double _getNormallyDistributedNumber( ) const;
 
+public:
+
     //ds cell lists
-    unsigned int _getCellIndex( const double& p_dX, const double& p_dY, const double& p_dZ ) const;
-    void _updateCellIndexRange( );
-    void _updateCellList( );
+    void updateCellList( thrust::host_vector< NBody::CParticle >& p_vecParticles );
+    void updateCellIndexRange( );
+    unsigned int getCellIndex( const double& p_dX, const double& p_dY, const double& p_dZ ) const;
 
 //ds internal statics
 private:

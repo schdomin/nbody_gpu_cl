@@ -40,7 +40,7 @@ public:
     //ds r/w indexing - ( ) is used instead of [ ] to mark the difference that this is not readonly - CAREFUL this allows manipulation of the data
     double& operator( )( const unsigned int& p_uIndex );
 
-    //ds readonly indexing -
+    //ds readonly indexing
     double operator[ ]( const unsigned int& p_uIndex ) const;
 
     //ds setting

@@ -8,8 +8,7 @@
 
 
 //ds cuda kernels - optimized for one block
-__global__ void computeAccelerationsLennardJones( const unsigned int p_uNumberOfParticles,
-                                                  const NBody::CParticle* p_vecParticles,
+__global__ void computeAccelerationsLennardJones( const NBody::CParticle* p_vecParticles,
                                                   const std::pair< unsigned int, unsigned int >* p_arrCellIndexRange,
                                                   const double p_dMinimumDistance,
                                                   const double p_dPotentialDepth,
@@ -92,11 +91,56 @@ __global__ void computeAccelerationsLennardJones( const unsigned int p_uNumberOf
     }
 }
 
-__global__ void updateParticlesVelocityVerlet( const unsigned int p_uNumberOfParticles,
-                                               NBody::CParticle* p_vecParticles,
-                                               const float p_fTimeStepSize )
+__global__ void updateParticlesVelocityVerlet( NBody::CParticle* p_vecParticles,
+                                               const double* p_arrNewAccelerations,
+                                               const double p_dLowerBoundary,
+                                               const double p_dUpperBoundary,
+                                               const double p_dTimeStepSize )
 {
+    //ds particle index
+    const unsigned int uIndex1D( threadIdx.x );
 
+    //ds calculate domain size
+    const double dDomainSize( fabs( p_dLowerBoundary ) + fabs( p_dUpperBoundary ) );
+
+    //ds get properties
+    double* vecPosition              = p_vecParticles[uIndex1D].m_cPosition;
+    double* vecVelocity              = p_vecParticles[uIndex1D].m_cVelocity;
+    double* vecAcceleration          = p_vecParticles[uIndex1D].m_cAcceleration;
+    const double* vecNewAcceleration = &p_arrNewAccelerations[3*uIndex1D];
+
+    //ds velocity-verlet for position
+    vecPosition[0] = vecPosition[0] + p_dTimeStepSize*vecVelocity[0] + 1.0/2*pow( p_dTimeStepSize, 2 )*vecAcceleration[0];
+    vecPosition[1] = vecPosition[1] + p_dTimeStepSize*vecVelocity[1] + 1.0/2*pow( p_dTimeStepSize, 2 )*vecAcceleration[1];
+    vecPosition[2] = vecPosition[2] + p_dTimeStepSize*vecVelocity[2] + 1.0/2*pow( p_dTimeStepSize, 2 )*vecAcceleration[2];
+
+    //ds produce periodic boundary shifting - check each element: x,y,z
+    for( unsigned int v = 0; v < 3; ++v )
+    {
+        //ds check if we are below the boundary
+        while( p_dLowerBoundary > vecPosition[v] )
+        {
+            //ds map the particle to the other boundary by shifting it up to the boundary
+            vecPosition[v] += dDomainSize;
+        }
+
+        //ds check if we are above the boundary
+        while( p_dUpperBoundary < vecPosition[v] )
+        {
+            //ds map the particle to the other boundary by shifting it back to the boundary
+            vecPosition[v] -= dDomainSize;
+        }
+    }
+
+    //ds velocity-verlet for velocity
+    vecVelocity[0] = vecVelocity[0] + ( p_dTimeStepSize/2 )*( vecNewAcceleration[0] + vecAcceleration[0] );
+    vecVelocity[1] = vecVelocity[1] + ( p_dTimeStepSize/2 )*( vecNewAcceleration[1] + vecAcceleration[1] );
+    vecVelocity[2] = vecVelocity[2] + ( p_dTimeStepSize/2 )*( vecNewAcceleration[2] + vecAcceleration[2] );
+
+    //ds update the old accelerations
+    vecAcceleration[0] = vecNewAcceleration[0];
+    vecAcceleration[1] = vecNewAcceleration[1];
+    vecAcceleration[2] = vecNewAcceleration[2];
 }
 
 int main( int argc, char** argv )
@@ -106,7 +150,7 @@ int main( int argc, char** argv )
 
     //ds domain configuration
     const std::pair< double, double > pairBoundaries( -1.0, 1.0 );
-    const double dDomainWidth( labs( pairBoundaries.first ) + labs( pairBoundaries.second ) );
+    const double dDomainWidth( fabs( pairBoundaries.first ) + fabs( pairBoundaries.second ) );
     const unsigned int uNumberOfParticles( 100 );
 
     //ds current simulation configuration
@@ -122,7 +166,7 @@ int main( int argc, char** argv )
     const unsigned int uNumberOfCells1D( floor( dDomainWidth/( 2.5*dMinimumDistance ) ) );
     const unsigned int uMaximumCellIndex( uNumberOfCells1D + pow( uNumberOfCells1D, 2 ) + pow( uNumberOfCells1D, 3 ) + 1 );
 
-    std::cout << "--------CPU SETUP------------------------------------------------------------" << std::endl;
+    std::cout << "------- GPU SETUP -----------------------------------------------------------" << std::endl;
     std::cout << "  Number of particles: " << uNumberOfParticles << std::endl;
     std::cout << "        Boundary (3D): [" << pairBoundaries.first << ", " << pairBoundaries.second << "]" << std::endl;
     std::cout << "         Domain Width: " << dDomainWidth << std::endl;
@@ -132,7 +176,7 @@ int main( int argc, char** argv )
     std::cout << "Target kinetic energy: " << dTargetKineticEnergy << std::endl;
     std::cout << " Number of time steps: " << uNumberOfTimeSteps << std::endl;
     std::cout << "       Time step size: " << dTimeStepSize << std::endl;
-    std::cout << "--------CELL LISTS-----------------------------------------------------------" << std::endl;
+    std::cout << "------- CELL LISTS ----------------------------------------------------------" << std::endl;
     std::cout << " Number of cells 1D M: " << uNumberOfCells1D << std::endl;
     std::cout << "   Maximum cell index: " << uMaximumCellIndex << std::endl;
     std::cout << "-----------------------------------------------------------------------------" << std::endl;
@@ -155,7 +199,7 @@ int main( int argc, char** argv )
     cudaMalloc( (void **)&d_arrNewAccelerations, uNumberOfParticles*3*sizeof( double ) ) ;
 
     //ds get particles for the device
-    thrust::device_vector< NBody::CParticle > d_vecParticles( 100 ); //cDomain.getParticles( ) );
+    thrust::device_vector< NBody::CParticle > d_vecParticles( cDomain.getParticles( ) );
 
     //ds get a raw pointer for kernel usage
     NBody::CParticle *vecParticles( thrust::raw_pointer_cast( &d_vecParticles[0] ) );
@@ -186,17 +230,22 @@ int main( int argc, char** argv )
         cudaMemcpy( d_arrCellIndexRange, h_arrCellIndexRange, uMaximumCellIndex*sizeof( std::pair< unsigned int, unsigned int > ), cudaMemcpyHostToDevice );
 
         //ds compute accelerations for all cells - launch as many threads as we have cells
-        computeAccelerationsLennardJones<<< 1, uMaximumCellIndex >>>( uNumberOfParticles,
-                                                                      vecParticles,
+        computeAccelerationsLennardJones<<< 1, uMaximumCellIndex >>>( vecParticles,
                                                                       d_arrCellIndexRange,
                                                                       dMinimumDistance,
                                                                       dPotentialDepth,
                                                                       uMaximumCellIndex,
                                                                       uMaximumNeighborCellIndexRange,
                                                                       d_arrNewAccelerations );
+        //ds update particle properties
+        updateParticlesVelocityVerlet<<< 1, uNumberOfParticles >>>( vecParticles,
+                                                                    d_arrNewAccelerations,
+                                                                    pairBoundaries.first,
+                                                                    pairBoundaries.second,
+                                                                    dTimeStepSize );
 
         //ds copy particles back to the domain - this call also updates the cell lists and changes the support structure
-        //cDomain.setParticles( d_vecParticles );
+        cDomain.setParticles( d_vecParticles );
 
         //ds record situation (we will write the stream to the file in one operation afterwards )
         cDomain.saveParticlesToStream( );
